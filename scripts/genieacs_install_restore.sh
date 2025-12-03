@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 set -e
 
-# ==== VERSI DISAMAKAN DENGAN SERVER LAMA ====
-NODE_MAJOR=20       # dari: node -v  -> v20.19.2 => 20
-MONGO_MAJOR=4.4     # dari: mongod --version -> 4.4.29 => 4.4
-# ============================================
+# ==== VERSI SAMA DENGAN SERVER LAMA ====
+NODE_MAJOR=20
+MONGO_MAJOR=4.4
+# =======================================
 
-# Deteksi root repo (script boleh dijalankan dari mana saja)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 CONFIG_DIR="$REPO_ROOT/config"
-SYSTEMD_DIR="$REPO_ROOT/systemd"
-PROVISIONS_DIR="$REPO_ROOT/provisions"
 BACKUP_TAR="$REPO_ROOT/backup_mongo_dump_genieacs.tar.gz"
+PROGRAM_TAR="$REPO_ROOT/genieacs_program.tar.gz"
+SYSTEMD_TAR="$REPO_ROOT/genieacs_systemd.tar.gz"
 
 echo "[*] Repo root: $REPO_ROOT"
 
@@ -27,7 +26,7 @@ echo "    Codename: $UBUNTU_CODENAME"
 
 echo "[*] Update apt & install tools dasar"
 apt update
-apt install -y curl gnupg ca-certificates lsb-release build-essential git
+apt install -y curl gnupg ca-certificates lsb-release build-essential git openssl mongodb-database-tools || true
 
 # =========================
 # 1) Install Node.js
@@ -44,8 +43,8 @@ echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.
 apt update
 apt install -y nodejs
 
-echo "[*] Versi Node.js terpasang:"
-node -v || echo "Node.js tidak terpasang dengan benar!"
+echo "[*] Versi Node.js:"
+node -v || echo "  ! Node.js tidak terpasang dengan benar"
 
 # =========================
 # 2) Install MongoDB
@@ -53,10 +52,9 @@ node -v || echo "Node.js tidak terpasang dengan benar!"
 echo
 echo "[*] Install MongoDB $MONGO_MAJOR dari repo resmi MongoDB"
 
-# Trik: untuk 4.4 di Ubuntu 22.04 (jammy), pakai repo 'focal'
 MONGO_OS_CODENAME="$UBUNTU_CODENAME"
 if [ "$MONGO_MAJOR" = "4.4" ] && [ "$UBUNTU_CODENAME" = "jammy" ]; then
-  echo "    -> UBUNTU jammy + Mongo 4.4: pakai repo focal (trik kompatibilitas)"
+  echo "    -> Ubuntu jammy + Mongo 4.4: pakai repo focal (trik kompatibilitas)"
   MONGO_OS_CODENAME="focal"
 fi
 
@@ -73,138 +71,170 @@ systemctl enable mongod
 systemctl start mongod
 
 echo "[*] Versi MongoDB:"
-mongod --version | head -n 3 || echo "mongod tidak berjalan!"
+mongod --version | head -n 3 || echo "  ! mongod tidak berjalan!"
 
 # Pastikan mongorestore ada
-apt install -y mongodb-database-tools || true
 if ! command -v mongorestore >/dev/null 2>&1; then
   echo "  ! mongorestore tidak ditemukan. Pastikan mongodb-database-tools terinstall."
 fi
 
 # =========================
-# 3) Install GenieACS
+# 3) Siapkan user & /opt/genieacs dari TAR program
 # =========================
-
 echo
-echo "[*] Membuat user & direktori untuk GenieACS"
+echo "[*] Siapkan user & /opt/genieacs dari bundle program lama"
 
 id -u genieacs >/dev/null 2>&1 || useradd -r -s /bin/false genieacs
-mkdir -p /opt/genieacs
-chown genieacs:genieacs /opt/genieacs
 
-echo "[*] Install GenieACS via npm (global)"
-# Kalau mau lock versi, bisa diganti: npm install -g genieacs@VERSI
-npm install -g genieacs
-
-# Opsional: symlink source ke /opt/genieacs/app
-if [ -d /usr/local/lib/node_modules/genieacs ]; then
-  ln -sf /usr/local/lib/node_modules/genieacs /opt/genieacs/app
+if [ ! -f "$PROGRAM_TAR" ]; then
+  echo "  ! $PROGRAM_TAR tidak ditemukan di repo. Tidak bisa lanjut."
+  exit 1
 fi
 
-# =========================
-# 4) Copy config + provisions dari repo
-# =========================
+mkdir -p /opt
+# backup kalau sudah ada
+if [ -d /opt/genieacs ]; then
+  mv /opt/genieacs "/opt/genieacs_backup_$(date +%F-%H%M%S)"
+fi
 
+tar -xzf "$PROGRAM_TAR" -C /opt
+chown -R genieacs:genieacs /opt/genieacs
+
+# =========================
+# 4) Copy config dari repo (override env lama kalau perlu)
+# =========================
 echo
 echo "[*] Copy konfigurasi dari repo ke /opt/genieacs"
 
-mkdir -p /opt/genieacs/config
-mkdir -p /opt/genieacs/provisions
-
-# genieacs.env full (dengan password) dari repo
 if [ -f "$CONFIG_DIR/genieacs.env" ]; then
   cp "$CONFIG_DIR/genieacs.env" /opt/genieacs/genieacs.env
-  chown genieacs:genieacs /opt/genieacs/genieacs.env
-  echo "    -> /opt/genieacs/genieacs.env disalin dari repo (full, termasuk password)"
-else
-  echo "  ! $CONFIG_DIR/genieacs.env tidak ditemukan. Script tidak bisa lanjut full otomatis."
+  echo "    -> /opt/genieacs/genieacs.env disalin dari repo"
 fi
 
-# JSON config
-if ls "$CONFIG_DIR"/*.json 1>/dev/null 2>&1; then
-  cp "$CONFIG_DIR"/*.json /opt/genieacs/config/ 2>/dev/null || true
-  chown -R genieacs:genieacs /opt/genieacs/config
-  echo "    -> Menyalin JSON config ke /opt/genieacs/config/"
-else
-  echo "  ! Tidak ada *.json di $CONFIG_DIR (abaikan kalau memang tidak pakai)"
+if [ -d "$CONFIG_DIR" ]; then
+  if ls "$CONFIG_DIR"/*.json 1>/dev/null 2>&1; then
+    mkdir -p /opt/genieacs/config
+    cp "$CONFIG_DIR"/*.json /opt/genieacs/config/ 2>/dev/null || true
+    echo "    -> JSON config disalin ke /opt/genieacs/config/"
+  fi
 fi
 
-# Provisions
-if [ -d "$PROVISIONS_DIR" ]; then
-  cp -a "$PROVISIONS_DIR"/* /opt/genieacs/provisions/ 2>/dev/null || true
-  chown -R genieacs:genieacs /opt/genieacs/provisions
-  echo "    -> Menyalin provisions ke /opt/genieacs/provisions/"
-else
-  echo "  ! Folder provisions tidak ditemukan di repo"
-fi
+chown -R genieacs:genieacs /opt/genieacs
 
 # =========================
-# 5) Systemd service
+# 5) Tambah GENIEACS_UI_JWT_SECRET jika belum ada
 # =========================
-
 echo
-echo "[*] Menyalin systemd service dari repo"
+echo "[*] Pastikan GENIEACS_UI_JWT_SECRET ada di /opt/genieacs/genieacs.env"
 
-if ls "$SYSTEMD_DIR"/genieacs-*.service 1>/dev/null 2>&1; then
-  cp "$SYSTEMD_DIR"/genieacs-*.service /etc/systemd/system/
-  systemctl daemon-reload
-  systemctl enable genieacs-cwmp genieacs-nbi genieacs-fs genieacs-ui
-  echo "    -> Service GenieACS di-enable"
-else
-  echo "  ! Tidak ada file genieacs-*.service di $SYSTEMD_DIR"
+if [ ! -f /opt/genieacs/genieacs.env ]; then
+  echo "  ! /opt/genieacs/genieacs.env tidak ada. Buat minimal file kosong."
+  touch /opt/genieacs/genieacs.env
 fi
 
-# =========================
-# 6) Restore MongoDB
-# =========================
+if ! grep -q 'GENIEACS_UI_JWT_SECRET=' /opt/genieacs/genieacs.env; then
+  SECRET=$(openssl rand -hex 32)
+  sed -i '/GENIEACS_UI_JWT_SECRET/d;/UI_JWT_SECRET/d' /opt/genieacs/genieacs.env
+  cat >> /opt/genieacs/genieacs.env <<EOS
+GENIEACS_UI_JWT_SECRET=$SECRET
+UI_JWT_SECRET=$SECRET
+EOS
+  echo "    -> GENIEACS_UI_JWT_SECRET ditambahkan"
+fi
 
+chown genieacs:genieacs /opt/genieacs/genieacs.env
+chmod 600 /opt/genieacs/genieacs.env
+
+# =========================
+# 6) Extract systemd service dari TAR systemd
+# =========================
 echo
-echo "[*] Restore MongoDB database 'genieacs' dari backup di repo"
+echo "[*] Extract systemd service dari bundle lama"
 
-if [ -f "$BACKUP_TAR" ]; then
+if [ ! -f "$SYSTEMD_TAR" ]; then
+  echo "  ! $SYSTEMD_TAR tidak ditemukan di repo."
+else
+  tar -xzf "$SYSTEMD_TAR" -C /
+fi
+
+systemctl daemon-reload
+
+# Pastikan service di-enable
+systemctl enable genieacs-cwmp genieacs-nbi genieacs-fs genieacs-ui || true
+
+# =========================
+# 7) Siapkan folder log /var/log/genieacs
+# =========================
+echo
+echo "[*] Siapkan /var/log/genieacs dan file log"
+
+LOG_DIR="/var/log/genieacs"
+mkdir -p "$LOG_DIR"
+chown genieacs:genieacs "$LOG_DIR"
+
+for f in genieacs-cwmp-access.log genieacs-nbi-access.log genieacs-fs-access.log genieacs-ui-access.log genieacs-debug.yaml; do
+  touch "$LOG_DIR/$f"
+  chown genieacs:genieacs "$LOG_DIR/$f"
+done
+
+# =========================
+# 8) Restore MongoDB dari backup
+# =========================
+echo
+echo "[*] Restore MongoDB dari $BACKUP_TAR"
+
+if [ ! -f "$BACKUP_TAR" ]; then
+  echo "  ! $BACKUP_TAR tidak ditemukan, lewati restore Mongo."
+else
   TMP_DIR="$REPO_ROOT/tmp_restore_mongo"
   rm -rf "$TMP_DIR"
   mkdir -p "$TMP_DIR"
-  echo "    -> Ekstrak $BACKUP_TAR ke $TMP_DIR"
   tar -xzf "$BACKUP_TAR" -C "$TMP_DIR"
 
-  if [ -d "$TMP_DIR/mongo_dump/genieacs" ]; then
-    RESTORE_DIR="$TMP_DIR/mongo_dump/genieacs"
-  elif [ -d "$TMP_DIR/genieacs" ]; then
-    RESTORE_DIR="$TMP_DIR/genieacs"
+  # Deteksi DB_NAME dari MONGODB_URI di env
+  MONGO_URI_LINE=$(grep -E '^MONGODB_URI=' /opt/genieacs/genieacs.env || true)
+  DB_NAME=$(printf '%s\n' "$MONGO_URI_LINE" | sed 's/.*\///; s/\?.*//')
+  if [ -z "$DB_NAME" ]; then
+    DB_NAME="genieacs"
+  fi
+  echo "    -> DB_NAME: $DB_NAME"
+
+  # Cari folder dump untuk DB tersebut
+  if [ -d "$TMP_DIR/mongo_migrate_latest/$DB_NAME" ]; then
+    RESTORE_DIR="$TMP_DIR/mongo_migrate_latest/$DB_NAME"
   else
-    RESTORE_DIR=$(find "$TMP_DIR" -maxdepth 3 -type d -name "genieacs" | head -n1 || true)
+    RESTORE_DIR=$(find "$TMP_DIR" -maxdepth 4 -type d -name "$DB_NAME" | head -n1 || true)
   fi
 
   if [ -n "$RESTORE_DIR" ] && [ -d "$RESTORE_DIR" ]; then
-    echo "    -> Menjalankan: mongorestore --drop --db genieacs $RESTORE_DIR"
-    mongorestore --drop --db genieacs "$RESTORE_DIR"
+    echo "    -> Restore dari $RESTORE_DIR"
+    mongorestore --drop --db "$DB_NAME" "$RESTORE_DIR"
     echo "    -> Restore MongoDB selesai"
   else
-    echo "  ! Folder data genieacs tidak ditemukan di dalam tar. Cek struktur arsip."
+    echo "  ! Folder dump DB $DB_NAME tidak ditemukan di dalam backup."
   fi
 
   rm -rf "$TMP_DIR"
-else
-  echo "  ! File backup Mongo $BACKUP_TAR tidak ditemukan di repo."
 fi
 
 # =========================
-# 7) Start service
+# 9) Start semua service GenieACS
 # =========================
-
 echo
 echo "[*] Restart semua service GenieACS"
 systemctl restart genieacs-cwmp genieacs-nbi genieacs-fs genieacs-ui || true
 
 echo
+echo "[*] Status singkat genieacs-ui:"
+systemctl status genieacs-ui --no-pager | sed -n '1,15p'
+
+echo
+echo "[*] Cek port 3000:"
+ss -tulpn | grep 3000 || echo "  ! Tidak ada yang listen di port 3000"
+
+echo
 echo "====================================================="
 echo "INSTALL + RESTORE GENIEACS SELESAI"
-echo "Server ini sekarang seharusnya mirip dengan server lama."
-echo
-echo "Checklist:"
-echo "  - Cek status Mongo:         systemctl status mongod"
-echo "  - Cek status GenieACS:      systemctl status genieacs-*"
-echo "  - Coba akses UI:            http://IP_SERVER_BARU:3000"
-echo "  - Sesuaikan nginx/apache jika dipakai reverse proxy."
+echo "Server ini sekarang memakai program & systemd hasil clone dari server lama,"
+echo "dengan Mongo yang sudah di-restore dari backup terbaru."
 echo "====================================================="
