@@ -52,3 +52,9 @@ apt update && apt install -y git
 
 git clone https://github.com/addysetiawan19041996-cmd/genieacs-backup.git
 cd genieacs-backup
+
+### 3. Jalankan Installer
+
+```bash
+scripts/genieacs_install_restore.sh
+
