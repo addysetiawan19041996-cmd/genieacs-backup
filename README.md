@@ -13,3 +13,12 @@ Langkah restore singkat:
 3. Restore MongoDB dari mongo_dump/ dengan:
    mongorestore --db genieacs mongo_dump/genieacs
 4. systemctl daemon-reload && restart semua service genieacs.
+
+Langkah Install
+apt update && apt install -y git
+git clone https://github.com/addysetiawan19041996-cmd/genieacs-backup.git
+cd genieacs-backup
+bash scripts/genieacs_install_restore.sh
+
+
+
