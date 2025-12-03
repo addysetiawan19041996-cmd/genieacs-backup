@@ -53,10 +53,17 @@ node -v || echo "Node.js tidak terpasang dengan benar!"
 echo
 echo "[*] Install MongoDB $MONGO_MAJOR dari repo resmi MongoDB"
 
+# Trik: untuk 4.4 di Ubuntu 22.04 (jammy), pakai repo 'focal'
+MONGO_OS_CODENAME="$UBUNTU_CODENAME"
+if [ "$MONGO_MAJOR" = "4.4" ] && [ "$UBUNTU_CODENAME" = "jammy" ]; then
+  echo "    -> UBUNTU jammy + Mongo 4.4: pakai repo focal (trik kompatibilitas)"
+  MONGO_OS_CODENAME="focal"
+fi
+
 curl -fsSL https://pgp.mongodb.com/server-$MONGO_MAJOR.asc \
   | gpg --dearmor -o /usr/share/keyrings/mongodb-server-$MONGO_MAJOR.gpg
 
-echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-$MONGO_MAJOR.gpg ] https://repo.mongodb.org/apt/ubuntu $UBUNTU_CODENAME/mongodb-org/$MONGO_MAJOR multiverse" \
+echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-$MONGO_MAJOR.gpg ] https://repo.mongodb.org/apt/ubuntu $MONGO_OS_CODENAME/mongodb-org/$MONGO_MAJOR multiverse" \
   > /etc/apt/sources.list.d/mongodb-org-$MONGO_MAJOR.list
 
 apt update
