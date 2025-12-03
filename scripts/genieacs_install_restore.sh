@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
-# ==== VERSI SAMA DENGAN SERVER LAMA ====
+# ==== Versi lingkungan yang diharapkan (sesuai server lama) ====
 NODE_MAJOR=20
 MONGO_MAJOR=4.4
-# =======================================
+# =============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -26,7 +26,33 @@ echo "    Codename: $UBUNTU_CODENAME"
 
 echo "[*] Update apt & install tools dasar"
 apt update
-apt install -y curl gnupg ca-certificates lsb-release build-essential git openssl mongodb-database-tools || true
+apt install -y curl gnupg ca-certificates lsb-release build-essential git openssl || true
+
+# -------------------------
+# Helper: pastikan libssl1.1 ada (untuk Mongo 4.4 di jammy)
+# -------------------------
+ensure_libssl11() {
+  if dpkg -s libssl1.1 >/dev/null 2>&1; then
+    echo "    -> libssl1.1 sudah terpasang"
+    return 0
+  fi
+
+  echo "    -> libssl1.1 belum ada, mencoba download dari security.ubuntu.com ..."
+  local FILE="libssl1.1_1.1.1f-1ubuntu2.24_amd64.deb"
+
+  cd /root
+  if [ ! -f "$FILE" ]; then
+    wget "http://security.ubuntu.com/ubuntu/pool/main/o/openssl/$FILE"
+  fi
+
+  dpkg -i "$FILE" || apt -f install -y || true
+
+  if dpkg -s libssl1.1 >/dev/null 2>&1; then
+    echo "    -> libssl1.1 terpasang"
+  else
+    echo "    !! Gagal memasang libssl1.1, MongoDB $MONGO_MAJOR mungkin tidak bisa dipasang"
+  fi
+}
 
 # =========================
 # 1) Install Node.js
@@ -54,29 +80,32 @@ echo "[*] Install MongoDB $MONGO_MAJOR dari repo resmi MongoDB"
 
 MONGO_OS_CODENAME="$UBUNTU_CODENAME"
 if [ "$MONGO_MAJOR" = "4.4" ] && [ "$UBUNTU_CODENAME" = "jammy" ]; then
-  echo "    -> Ubuntu jammy + Mongo 4.4: pakai repo focal (trik kompatibilitas)"
+  echo "    -> Ubuntu jammy + Mongo 4.4: pakai repo focal + libssl1.1"
   MONGO_OS_CODENAME="focal"
 fi
 
-curl -fsSL https://pgp.mongodb.com/server-$MONGO_MAJOR.asc \
-  | gpg --dearmor -o /usr/share/keyrings/mongodb-server-$MONGO_MAJOR.gpg
+curl -fsSL "https://pgp.mongodb.com/server-$MONGO_MAJOR.asc" \
+  | gpg --dearmor -o "/usr/share/keyrings/mongodb-server-$MONGO_MAJOR.gpg"
 
 echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-$MONGO_MAJOR.gpg ] https://repo.mongodb.org/apt/ubuntu $MONGO_OS_CODENAME/mongodb-org/$MONGO_MAJOR multiverse" \
-  > /etc/apt/sources.list.d/mongodb-org-$MONGO_MAJOR.list
+  > "/etc/apt/sources.list.d/mongodb-org-$MONGO_MAJOR.list"
 
 apt update
-apt install -y mongodb-org
 
-systemctl enable mongod
-systemctl start mongod
+# Khusus jammy + 4.4, pastikan libssl1.1 ada sebelum install
+if [ "$MONGO_MAJOR" = "4.4" ] && [ "$UBUNTU_CODENAME" = "jammy" ]; then
+  ensure_libssl11
+fi
+
+if ! apt install -y mongodb-org; then
+  echo "  ! apt install mongodb-org gagal. Cek log di atas."
+fi
+
+systemctl enable mongod || true
+systemctl start mongod || true
 
 echo "[*] Versi MongoDB:"
 mongod --version | head -n 3 || echo "  ! mongod tidak berjalan!"
-
-# Pastikan mongorestore ada
-if ! command -v mongorestore >/dev/null 2>&1; then
-  echo "  ! mongorestore tidak ditemukan. Pastikan mongodb-database-tools terinstall."
-fi
 
 # =========================
 # 3) Siapkan user & /opt/genieacs dari TAR program
@@ -122,13 +151,13 @@ fi
 chown -R genieacs:genieacs /opt/genieacs
 
 # =========================
-# 5) Tambah GENIEACS_UI_JWT_SECRET jika belum ada
+# 5) Pastikan GENIEACS_UI_JWT_SECRET ada di env
 # =========================
 echo
 echo "[*] Pastikan GENIEACS_UI_JWT_SECRET ada di /opt/genieacs/genieacs.env"
 
 if [ ! -f /opt/genieacs/genieacs.env ]; then
-  echo "  ! /opt/genieacs/genieacs.env tidak ada. Buat minimal file kosong."
+  echo "  ! /opt/genieacs/genieacs.env tidak ada. Buat file baru."
   touch /opt/genieacs/genieacs.env
 fi
 
@@ -163,10 +192,10 @@ systemctl daemon-reload
 systemctl enable genieacs-cwmp genieacs-nbi genieacs-fs genieacs-ui || true
 
 # =========================
-# 7) Siapkan folder log /var/log/genieacs
+# 7) Siapkan folder log + logrotate
 # =========================
 echo
-echo "[*] Siapkan /var/log/genieacs dan file log"
+echo "[*] Siapkan /var/log/genieacs dan file log + logrotate"
 
 LOG_DIR="/var/log/genieacs"
 mkdir -p "$LOG_DIR"
@@ -176,6 +205,22 @@ for f in genieacs-cwmp-access.log genieacs-nbi-access.log genieacs-fs-access.log
   touch "$LOG_DIR/$f"
   chown genieacs:genieacs "$LOG_DIR/$f"
 done
+
+# logrotate config untuk mencegah log menumpuk
+cat >/etc/logrotate.d/genieacs <<'EOLR'
+/var/log/genieacs/genieacs-*.log /var/log/genieacs/genieacs-debug.yaml {
+    weekly
+    rotate 12
+    size 50M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}
+EOLR
+
+chmod 644 /etc/logrotate.d/genieacs
 
 # =========================
 # 8) Restore MongoDB dari backup
@@ -235,6 +280,6 @@ ss -tulpn | grep 3000 || echo "  ! Tidak ada yang listen di port 3000"
 echo
 echo "====================================================="
 echo "INSTALL + RESTORE GENIEACS SELESAI"
-echo "Server ini sekarang memakai program & systemd hasil clone dari server lama,"
-echo "dengan Mongo yang sudah di-restore dari backup terbaru."
+echo "Program & service berasal dari bundle server lama,"
+echo "MongoDB direstore dari backup, dan logrotate sudah di-setup."
 echo "====================================================="
