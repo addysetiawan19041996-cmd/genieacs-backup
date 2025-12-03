@@ -1,0 +1,13 @@
+[Unit]
+Description=GenieACS Monitoring Script
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/node /opt/genieacs-monitoring/genieacs-monitoring.js
+WorkingDirectory=/opt/genieacs-monitoring
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

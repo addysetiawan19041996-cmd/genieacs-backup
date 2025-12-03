@@ -1,0 +1,13 @@
+[Unit]
+Description=GenieACS Exporter
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/node /opt/genieacs-exporter/index.js
+Restart=always
+User=root
+Environment=NODE_ENV=production
+WorkingDirectory=/opt/genieacs-exporter
+
+[Install]
+WantedBy=multi-user.target

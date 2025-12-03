@@ -1,0 +1,9 @@
+mongo_dump/
+genieacs.env
+*.key
+*.crt
+node_modules/
+npm-debug.log
+*.log
+*.swp
+*.swo

@@ -1,0 +1,13 @@
+[Unit]
+Description=GenieACS UI
+After=network.target mongod.service
+Requires=mongod.service
+
+[Service]
+User=genieacs
+EnvironmentFile=/opt/genieacs/genieacs.env
+ExecStart=/opt/genieacs/dist/bin/genieacs-ui --ui-jwt-secret "OlepEKNqVS0E+miXTC9bCrz//+vtEjP7+a1Fn2xtNA8="
+KillMode=process
+
+[Install]
+WantedBy=default.target
