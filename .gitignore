@@ -1,5 +1,4 @@
 mongo_dump/
-genieacs.env
 *.key
 *.crt
 node_modules/
